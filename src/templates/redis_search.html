@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Search</title>
+    <style>
+        table {
+            border-collapse: collapse;
+            width: 100%;
+        }
+
+        th, td {
+            border: 1px solid black;
+            padding: 8px;
+            text-align: left;
+        }
+
+        th {
+            background-color: #f2f2f2;
+        }
+    </style>
+</head>
+<body>
+    <input type="text" id="searchQuery">
+    <div id="results"></div>
+
+    <script>
+        // Function to debounce API requests
+        function debounce(func, timeout = 300) {
+            let timer;
+            return (...args) => {
+                clearTimeout(timer);
+                timer = setTimeout(() => { func.apply(this, args); }, timeout);
+            };
+        }
+
+        async function searchFiles() {
+            const searchQuery = document.getElementById('searchQuery').value;
+            if (searchQuery.length >= 3) {
+                const response = await fetch('/read_files', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ search_query: searchQuery })
+                });
+                const data = await response.json();
+                displayResults(data);
+            }
+        }
+
+        // Debounce the searchFiles function to prevent excessive API requests
+        const debouncedSearchFiles = debounce(searchFiles);
+
+        // Add event listener to input with debounced search function
+        document.getElementById('searchQuery').addEventListener('input', debouncedSearchFiles);
+
+        function displayResults(data) {
+            const resultsDiv = document.getElementById('results');
+            resultsDiv.innerHTML = '';
+
+            const files = Object.keys(data);
+            const values = Object.values(data);
+
+            const table = document.createElement('table');
+
+            // Create header row with filenames
+            const headerRow = document.createElement('tr');
+            files.forEach(file => {
+                const headerCell = document.createElement('th');
+                headerCell.textContent = file;
+                headerRow.appendChild(headerCell);
+            });
+            table.appendChild(headerRow);
+
+            // Find the maximum number of rows needed
+            let maxRows = 0;
+            values.forEach(fileData => {
+                if (Array.isArray(fileData) && fileData.length > maxRows) {
+                    maxRows = fileData.length;
+                } else if (fileData && fileData.length > maxRows) {
+                    maxRows = fileData.length;
+                }
+            });
+
+            // Populate table cells with matching values
+            for (let i = 0; i < maxRows; i++) {
+                const row = document.createElement('tr');
+                files.forEach((file, index) => {
+                    const cell = document.createElement('td');
+                    const fileData = values[index];
+                    if (Array.isArray(fileData)) {
+                        if (i < fileData.length) {
+                            cell.textContent = fileData[i];
+                        }
+                    } else if (typeof fileData === 'object') {
+                        // For Excel data
+                        if (fileData && fileData[i]) {
+                            const keys = Object.keys(fileData[i]);
+                            cell.textContent = keys.map(key => `${key}: ${fileData[i][key]}`).join(', ');
+                        }
+                    } else if (typeof fileData === 'string') {
+                        // For text data
+                        if (i < fileData.length) {
+                            cell.textContent = fileData[i];
+                        }
+                    }
+                    row.appendChild(cell);
+                });
+                table.appendChild(row);
+            }
+
+            resultsDiv.appendChild(table);
+        }
+    </script>
+</body>
+</html>
