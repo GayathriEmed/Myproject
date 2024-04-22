@@ -44,28 +44,23 @@ async def search_files(request):
 
     # Perform text search on Redis collections
     search_results = {}
-    files = [
-        "Alternate-Terms-2023.xlsx",
-        "icd10cm_drug_2023.xml",
-        "icd10cm_eindex_2023.xml",
-        "icd10cm_index_2023.xml",
-        "icd10cm_neoplasm_2023.xml",
-        "icd10cm_order_2023.txt",
-        "icd10cm_tabular_2023.xml"
-    ]
-    for file in files:
-        content = redis_client.get(file).decode('utf-8')
+    keys = redis_client.keys('*')  # Get all keys in Redis
+    for key in keys:
+        key_str = key.decode('utf-8')  # Convert bytes to string
+        content = redis_client.get(key_str).decode('utf-8')
         if search_query in content:
-            search_results[file] = "Match found"
+            search_results[key_str] = "Match found"
         else:
-            search_results[file] = "No match found"
+            search_results[key_str] = "No match found"
 
     return web.json_response(search_results)
 
-async def index(request):
+async def index(request):  # Add the 'request' parameter here
     with open("templates/redis_search.html", "r") as f:
         html_content = f.read()
     return web.Response(text=html_content, content_type="text/html")
+
+
 
 async def main():
     # Save data to Redis
@@ -73,7 +68,7 @@ async def main():
 
     # Create web application and routes
     app = web.Application()
-    app.router.add_get('/', index)
+    app.router.add_get('/', index)  # Adjusted to use 'index' function without parentheses
     app.router.add_post('/read_files', search_files)
 
     # Run web application
