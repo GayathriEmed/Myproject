@@ -1,85 +1,125 @@
 import asyncio
+import csv
+import os
 import redis
-import chardet
-from aiohttp import web
+import xml.etree.ElementTree as ET
+from flask import Flask, request, jsonify, render_template
+import aiofiles
 from pymongo import MongoClient
 
-# Initialize Redis connection
-redis_client = redis.StrictRedis(host='localhost', port=6379, db=0)
-
-# Initialize MongoDB connection
+app = Flask(__name__)
+redis_client = redis.Redis(host='localhost', port=6379, db=0, decode_responses=True)
 mongo_client = MongoClient('mongodb://localhost:27017/')
 db = mongo_client['search_queries']
 collection = db['queries']
 
-async def save_data_to_redis():
-    # Iterate over each file and save its data to Redis
-    files = [
-        "Alternate-Terms-2023.xlsx",
-        "icd10cm_drug_2023.xml",
-        "icd10cm_eindex_2023.xml",
-        "icd10cm_index_2023.xml",
-        "icd10cm_neoplasm_2023.xml",
-        "icd10cm_order_2023.txt",
-        "icd10cm_tabular_2023.xml"
-    ]
-    for file in files:
-        # Read file content and detect encoding
-        with open(file, 'rb') as f:
-            raw_data = f.read()
-            encoding = chardet.detect(raw_data)['encoding']
-        # Decode content with detected encoding
-        with open(file, 'r', encoding=encoding, errors='ignore') as f:
-            content = f.read()
-        # Save content to Redis as a separate collection
-        redis_client.set(file, content)
+# Asynchronous function to read XML file and save each node as a separate key in Redis
+async def read_xml(file_path):
+    try:
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+        for elem in root.iter():
+            key = f"{file_path}_{elem.tag}_{elem.text}"  # Create a unique key for Redis
+            redis_client.set(key, elem.text)  # Save the text in Redis
+        return True
+    except Exception as e:
+        return {'error': str(e)}
 
+# Asynchronous function to read CSV file and perform text searching
+async def read_csv(file_path, search_query):
+    try:
+        async with aiofiles.open(file_path, mode='r', encoding='latin-1') as csvfile:
+            reader = csv.DictReader(await csvfile.readlines())
+            data = {}
+            for row in reader:
+                map_target = row.get('mapTarget', '')
+                referenced_component_name = row.get('referencedComponentName', '')
+                if search_query in map_target or search_query in referenced_component_name:
+                    if file_path not in data:
+                        data[file_path] = []
+                    data[file_path].append((map_target, referenced_component_name))
+            return data
+    except Exception as e:
+        return {'error': str(e)}
 
-async def search_files(request):
-    data = await request.json()
-    search_query = data.get('search_query', '')
+# Asynchronous function to read text file and perform text searching
+async def read_text(file_path, search_query):
+    try:
+        async with aiofiles.open(file_path, 'r') as file:
+            data = await file.readlines()
+            filtered_data = [line.strip() for line in data if search_query in line]
+            return filtered_data
+    except Exception as e:
+        return {'error': str(e)}
+
+# Asynchronous function to search Redis for given query in XML keys
+async def search_redis(search_query, xml_files):
+    result = {xml_file: [] for xml_file in xml_files}
+    try:
+        keys = redis_client.keys()  # Get all keys stored in Redis
+        for key in keys:
+            value = redis_client.get(key)
+            for xml_file in xml_files:
+                if xml_file in key and search_query in value:
+                    # Extract the relevant information from the key
+                    key_parts = key.split('_')
+                    # Append only the relevant part to the result
+                    result[xml_file].append(key_parts[-1])  # Append the last part of the key
+    except Exception as e:
+        print(f"Error occurred while searching in Redis: {e}")
+    return result
+
+# API endpoint to read files and perform text searching within CSV, text, and XML files
+@app.route('/read_files', methods=['POST'])
+async def read_files():
+    search_query = request.json['search_query']
+    if len(search_query) < 3:
+        return jsonify({'error': 'Search query must be at least 3 characters long'})
 
     # Save search query to MongoDB
     collection.insert_one({'search_query': search_query})
 
-    # Perform text search on Redis collections
-    search_results = {}
-    keys = redis_client.keys('*')  # Get all keys in Redis
-    for key in keys:
-        key_str = key.decode('utf-8')  # Convert bytes to string
-        content = redis_client.get(key_str).decode('utf-8')
-        if search_query in content:
-            search_results[key_str] = "Match found"
-        else:
-            search_results[key_str] = "No match found"
+    # Get all CSV, text, and XML files in the current directory
+    csv_files = [file for file in os.listdir() if file.endswith('.csv')]
+    txt_files = [file for file in os.listdir() if file.endswith('.txt')]
+    xml_files = [
+        'icd10cm_drug_2023.xml',
+        'icd10cm_eindex_2023.xml',
+        'icd10cm_index_2023.xml',
+        'icd10cm_neoplasm_2023.xml',
+        'icd10cm_tabular_2023.xml'
+    ]
 
-    return web.json_response(search_results)
+    # Dictionary to store results
+    result = {}
 
-async def index(request):  # Add the 'request' parameter here
-    with open("templates/redis_search.html", "r") as f:
-        html_content = f.read()
-    return web.Response(text=html_content, content_type="text/html")
+    # Iterate over CSV files and search for the query
+    for csv_file in csv_files:
+        data = await read_csv(csv_file, search_query)
+        if data:
+            result.update(data)
 
+    # Iterate over text files and search for the query
+    for txt_file in txt_files:
+        data = await read_text(txt_file, search_query)
+        if data:
+            result[txt_file] = data
 
+    # Iterate over XML files and read each file
+    for xml_file in xml_files:
+        await read_xml(xml_file)
 
-async def main():
-    # Save data to Redis
-    await save_data_to_redis()
+    # Search Redis for the given query in XML files
+    search_result = await search_redis(search_query, xml_files)
+    result.update(search_result)
 
-    # Create web application and routes
-    app = web.Application()
-    app.router.add_get('/', index)  # Adjusted to use 'index' function without parentheses
-    app.router.add_post('/read_files', search_files)
+    return jsonify(result)
 
-    # Run web application
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, 'localhost', 8080)
-    await site.start()
-    print("Web server started at http://localhost:8080")
+# Render redis_search.html template
+@app.route('/')
+def index():
+    return render_template('redis_search.html')
 
-    # Keep the event loop running
-    await asyncio.Event().wait()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(app.run(debug=True))
