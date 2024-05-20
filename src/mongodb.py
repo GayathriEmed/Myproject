@@ -13,22 +13,50 @@ mongo_client = MongoClient('mongodb://localhost:27017/')
 db = mongo_client['search_queries']
 collection = db['queries']
 
+
 # Asynchronous function to read XML file and save each node as a separate key in Redis
 async def read_xml(file_path):
     try:
         tree = ET.parse(file_path)
         root = tree.getroot()
-        for main_term in root.iter('mainTerm'):
-            title = main_term.find('title').text if main_term.find('title') is not None else ''
-            for cell in main_term.findall('cell'):
-                col_value = cell.text
-                if col_value:
-                    key = f"{file_path}_{col_value}"
-                    value = f"{title} - {col_value}"
+
+        if 'drug' in file_path:
+            # Specific handling for icd10cm_drug_2023.xml
+            for main_term in root.iter('mainTerm'):
+                title = main_term.find('title').text if main_term.find('title') is not None else ''
+                for cell in main_term.findall('cell'):
+                    col_value = cell.text
+                    if col_value:
+                        key = f"{file_path}_{col_value}"
+                        value = f"{col_value} - {title}"
+                        redis_client.set(key, value)
+
+        elif 'tabular' in file_path:
+            # Specific handling for icd10cm_tabular_2023.xml
+            for diag in root.iter('diag'):
+                code = diag.find('name').text if diag.find('name') is not None else ''
+                desc = diag.find('desc').text if diag.find('desc') is not None else ''
+                if code:
+                    key = f"{file_path}_{code}"
+                    value = f"{code} - {desc}"
                     redis_client.set(key, value)
+
+        elif 'index' in file_path:
+            # Specific handling for icd10cm_index_2023.xml
+            for term in root.iter('term'):
+                title = term.find('title').text if term.find('title') is not None else ''
+                code = term.find('code').text if term.find('code') is not None else ''
+                if code:
+                    key = f"{file_path}_{code}"
+                    value = f"{code} - {title}"
+                    redis_client.set(key, value)
+
+        # Add handling for other XML files (icd10cm_eindex_2023.xml and icd10cm_neoplasm_2023.xml) if necessary
+
         return True
     except Exception as e:
         return {'error': str(e)}
+
 
 # Asynchronous function to read CSV file and perform text searching
 async def read_csv(file_path, search_query):
@@ -47,6 +75,7 @@ async def read_csv(file_path, search_query):
     except Exception as e:
         return {'error': str(e)}
 
+
 # Asynchronous function to read text file and perform text searching
 async def read_text(file_path, search_query):
     try:
@@ -56,6 +85,7 @@ async def read_text(file_path, search_query):
             return filtered_data
     except Exception as e:
         return {'error': str(e)}
+
 
 # Asynchronous function to search Redis for given query in XML keys
 async def search_redis(search_query, xml_files):
@@ -71,6 +101,7 @@ async def search_redis(search_query, xml_files):
     except Exception as e:
         print(f"Error occurred while searching in Redis: {e}")
     return result
+
 
 # API endpoint to read files and perform text searching within CSV, text, and XML files
 @app.route('/read_files', methods=['POST'])
@@ -118,10 +149,12 @@ async def read_files():
 
     return jsonify(result)
 
+
 # Render redis_search.html template
 @app.route('/')
 def index():
     return render_template('redis_search.html')
+
 
 if __name__ == '__main__':
     loop = asyncio.get_event_loop()
