@@ -18,10 +18,14 @@ async def read_xml(file_path):
     try:
         tree = ET.parse(file_path)
         root = tree.getroot()
-        for elem in root.iter():
-            # Create a unique key for Redis
-            key = f"{file_path}_{elem.tag}_{elem.attrib.get('id', '')}_{elem.text}"
-            redis_client.set(key, elem.text)
+        for main_term in root.iter('mainTerm'):
+            title = main_term.find('title').text if main_term.find('title') is not None else ''
+            for cell in main_term.findall('cell'):
+                col_value = cell.text
+                if col_value:
+                    key = f"{file_path}_{col_value}"
+                    value = f"{title} - {col_value}"
+                    redis_client.set(key, value)
         return True
     except Exception as e:
         return {'error': str(e)}
@@ -60,11 +64,10 @@ async def search_redis(search_query, xml_files):
         keys = redis_client.keys()  # Get all keys stored in Redis
         for key in keys:
             value = redis_client.get(key)
-            for xml_file in xml_files:
-                if xml_file in key and search_query in value:
-                    # Extract the relevant information from the key
-                    key_parts = key.split('_')
-                    result[xml_file].append(value)  # Append the value found in Redis
+            if search_query in value:
+                for xml_file in xml_files:
+                    if xml_file in key:
+                        result[xml_file].append(value)
     except Exception as e:
         print(f"Error occurred while searching in Redis: {e}")
     return result
